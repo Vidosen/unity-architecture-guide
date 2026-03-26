@@ -1,0 +1,4 @@
+interface:
+  display_name: "Unity Architecture Guide"
+  short_description: "Unity layering, boundaries, and review heuristics"
+  default_prompt: "Use $unity-architecture-guide to design, refactor, or review a Unity module architecture."
