@@ -2,311 +2,267 @@
 
 ## Table of Contents
 
-1. UI screen module
-2. Gameplay runtime module
-3. Phase-based gameplay flow
-4. ECS-backed subsystem
-5. Networked gameplay module
-6. Hybrid UI plus gameplay plus network
-7. Selection guide
+1. How to use these examples
+2. UI screen
+3. Gameplay runtime
+4. Multi-step flow
+5. ECS or jobs subsystem
+6. Networked gameplay
+7. Hybrid UI, gameplay, and network
+8. Selection questions
 
-## UI Screen Module
+## How To Use These Examples
 
-Use for settings, profile, shop, leaderboard, onboarding, diagnostics, and similar screens.
+Read every example from the smallest useful shape toward a possible mature shape. Stop as soon as the current pressures are resolved. Do not create the final folders and types in advance.
 
-### Shape
+The examples describe a continuum, not architecture stages. Different parts of one subsystem may need different techniques at the same time. A feature may also become simpler again after requirements disappear.
+
+For every extraction, ask:
+
+- What current problem does the new type solve?
+- Which code becomes easier to change or own?
+- What new navigation, wiring, lifetime, or mapping cost appears?
+- What evidence would make this extraction unnecessary?
+
+## UI Screen
+
+### Start Direct
+
+For a small settings, diagnostics, pause, or shop screen, begin with one cohesive component:
 
 ```text
-ShopScreenView (MonoBehaviour)
+ShopScreen (MonoBehaviour)
+  - serialized controls and labels
+  - click handlers
+  - one local async purchase flow
+  - loading, success, and error rendering
+```
+
+Keep this shape while one screen owns the behavior, the state remains small, and the external call is localized.
+
+### Extract Only Under Pressure
+
+| Current pressure | Smallest useful extraction |
+| --- | --- |
+| Rendering branches obscure the workflow | Add a local `ShopViewState` or focused render methods |
+| Several views initiate the same purchase flow | Extract `PurchasePremium` as one shared operation |
+| IAP calls spread or another implementation exists | Introduce `IIapGateway` and one adapter |
+| Loading, retries, navigation, and error mapping change independently from widgets | Introduce `ShopPresenter` |
+| Offer and purchase rules have meaningful invariants | Extract plain C# domain values and rules |
+
+Do not create a presenter, query, use case, repository, and analytics interface merely because the screen is called a module.
+
+### Possible Mature Shape
+
+When all of those pressures actually coexist, the shape may become:
+
+```text
+ShopScreenView
   -> ShopPresenter
       -> GetShopOffersQuery
       -> PurchasePremiumUseCase
-      -> RestorePurchasesUseCase
           -> IShopRepository
-          -> IIapService
-          -> IAnalyticsService
+          -> IIapGateway
+          -> ShopOffer / PurchaseRules
+
+Infrastructure
+  - RemoteShopRepository
+  - UnityIapAdapter
 ```
 
-### Rules
+Keep only the roles justified by the current screen and integrations.
 
-- `View` exposes events and renders `ViewState`.
-- `Presenter` owns loading, error, and content orchestration.
-- `UseCase` and `Query` own application logic, not UI controls.
-- SDK access stays in infrastructure.
+## Gameplay Runtime
 
-### Folder layout
+### Start Direct
+
+A small player or interactable feature may begin as one component or a few direct collaborators:
 
 ```text
-Shop/
-  Presentation/
-    ShopScreenView.cs
-    ShopPresenter.cs
-    ShopViewState.cs
-  Application/
-    GetShopOffersQuery.cs
-    PurchasePremiumUseCase.cs
-    RestorePurchasesUseCase.cs
-    Contracts/
-      IShopRepository.cs
-      IIapService.cs
-  Domain/
-    ShopOffer.cs
-    SubscriptionState.cs
-  Infrastructure/
-    RemoteShopRepository.cs
-    UnityIapAdapter.cs
-    ShopInstaller.cs
+CharacterController (MonoBehaviour)
+  - reads input
+  - moves a Rigidbody
+  - updates Animator
+  - owns local health and cooldown state
 ```
 
-## Gameplay Runtime Module
+This is acceptable while rules are simple, one runtime object owns the state, and changes remain local.
 
-Use for player controller, combat loop, interactables, training gameplay, and small-to-medium runtime systems.
+### Extract Only Under Pressure
 
-### Shape
+| Current pressure | Smallest useful extraction |
+| --- | --- |
+| Movement math is complex or repeatedly regresses | Extract a plain movement calculation or focused motor |
+| Health or cooldown rules are reused or invariant-heavy | Extract `Health`, `CooldownSet`, or one rule object |
+| Input sources vary | Introduce an input contract at that boundary |
+| Physics callbacks and gameplay decisions are difficult to reason about together | Convert callbacks into a small fact such as `HitContext` |
+| Several actions coordinate shared state | Introduce one runtime coordinator or focused use case |
+| HUD mapping grows independently | Extract a HUD presenter, leaving gameplay state authoritative elsewhere |
+
+Do not convert every `Update`, `FixedUpdate`, or trigger callback into a separate application service. Unity callbacks may orchestrate local behavior until independent ownership becomes useful.
+
+### Possible Mature Shape
 
 ```text
 PlayerInputReader (MonoBehaviour)
   -> CharacterRuntimeController
-      -> MoveCharacterUseCase
-      -> JumpUseCase
-      -> UseAbilityUseCase
-      -> CharacterPresenter / HudPresenter
+      -> MoveCharacter
+      -> UseAbility
+      -> Character / Health / Cooldowns
 
-GroundProbeAdapter
-  -> GroundContactInfo
-
-RigidbodyMotorAdapter
-  <- MotorCommand
+GroundProbeAdapter -> GroundContactInfo
+RigidbodyMotorAdapter <- MotorCommand
+CharacterHudPresenter -> CharacterHudView
 ```
 
-### Rules
+Use this fuller separation only when rules, physics, input, and presentation genuinely evolve on different axes.
 
-- `OnTriggerEnter`, `Update`, and `FixedUpdate` should not hold business rules.
-- runtime controller should not become a god object.
-- gameplay state needs an explicit owner.
-- Unity physics stays at adapter boundaries.
+## Multi-Step Flow
 
-### Folder layout
+### Start Direct
+
+Represent a short, linear flow in one owner:
 
 ```text
-Combat/
-  Presentation/
-    Runtime/
-      PlayerInputReader.cs
-      CharacterAnimatorView.cs
-      CharacterHudView.cs
-      HitboxAdapter.cs
-    Hud/
-      CharacterHudPresenter.cs
-      CharacterHudViewState.cs
-  Application/
-    UseCases/
-      MoveCharacterUseCase.cs
-      JumpUseCase.cs
-      UseAbilityUseCase.cs
-      ApplyDamageUseCase.cs
-    Systems/
-      CooldownTickSystem.cs
-    Contracts/
-      ICharacterRepository.cs
-      IAuthorityService.cs
-      IHitVfxAdapter.cs
-  Domain/
-    Character.cs
-    Health.cs
-    Stamina.cs
-    CooldownSet.cs
-    MovementRules.cs
-  Infrastructure/
-    RuntimeCharacterRepository.cs
-    HitVfxAdapter.cs
-    CombatInstaller.cs
+TrainingFlowController
+  - current phase field
+  - explicit transition methods
+  - local enter and exit actions
 ```
 
-## Phase-Based Gameplay Flow
+An enum and a small switch are often enough. Avoid one class per state when transitions are few and phase behavior remains easy to inspect together.
 
-Use for match lifecycle, onboarding, training session, wave combat, or any staged process.
+### Extract Only Under Pressure
 
-### Shape
+Introduce a state machine when current behavior includes several of these concerns:
+
+- invalid transitions must be prevented;
+- phases own non-trivial enter, exit, or cancellation work;
+- transitions branch from events or async results;
+- phase logic is reused or independently tested;
+- multiple objects currently believe they own the active phase.
+
+First centralize transition ownership. Extract separate state objects only when their behavior is large or independently variable.
+
+### Possible Mature Shape
 
 ```text
-TrainingSceneBootstrapper
+TrainingFlowController
   -> TrainingFlowStateMachine
       -> WarmupState
-      -> ActiveSessionState
+      -> ActiveTrainingState
       -> ResultsState
-      -> CompletedState
+
+Supporting operations
+  - StartTraining
+  - CompleteTraining
+  - SubmitResults
 ```
 
-### Rules
+Keep simple transitions in the state machine itself; do not add use cases that only rename state entry methods.
 
-- represent phases as formal states, not scattered booleans;
-- keep state transitions explicit;
-- keep state machine independent from concrete widgets;
-- keep per-phase actions in use cases or state entry and exit handlers.
+## ECS Or Jobs Subsystem
 
-### Folder layout
+### Start Direct
 
-```text
-TrainingFlow/
-  Presentation/
-    TrainingHudView.cs
-    TrainingHudPresenter.cs
-  Application/
-    StateMachines/
-      TrainingFlowStateMachine.cs
-      States/
-        WarmupState.cs
-        ActiveTrainingState.cs
-        ResultsState.cs
-    UseCases/
-      StartTrainingUseCase.cs
-      CompleteTrainingSessionUseCase.cs
-      SubmitResultsUseCase.cs
-  Domain/
-    TrainingSession.cs
-    TrainingScore.cs
-    TrainingRules.cs
-  Infrastructure/
-    TrainingFlowBootstrapper.cs
-    TrainingFlowInstaller.cs
-```
+Keep a subsystem in ordinary `MonoBehaviour` or plain C# form until profiling shows a relevant scale or scheduling problem. Prefer a local algorithm or data-layout improvement before changing execution models.
 
-## ECS-Backed Subsystem
+### Extract Only Under Pressure
 
-Use for projectile simulation, target tracking, crowd simulation, large scans, and other high-scale subsystems.
+Use jobs or Burst when measured hot work is parallelizable and data-oriented containers provide a clear benefit. Use ECS when entity count, homogeneous processing, system scheduling, or data locality materially improves the target workload.
 
-### Shape
+Do not introduce ECS for future scale, architectural purity, or a small number of heterogeneous actors.
+
+If the optimized implementation has one local caller, a direct integration may remain sufficient. Add a project-level API when callers, ownership, or representation must evolve independently from ECS internals.
+
+### Possible Mature Shape
 
 ```text
-Application layer
+Callers
   -> ITargetTrackingModule
       -> TargetTrackingModule
-          -> ECS World / Systems / Jobs / Burst kernels
+          -> ECS components, systems, jobs, and Burst kernels
+
+Boundary data
+  - ScanRequest
+  - TrackingCandidate
+  - TargetRegistration
 ```
 
-### Rules
+Choose one source of truth. Either feed snapshots into ECS and return results, or keep authoritative state inside the module and expose only its API. Do not mirror mutable truth in OO and ECS without an explicit synchronization owner.
 
-- expose narrow project-level requests and results;
-- keep ECS internals private to the module;
-- define source of truth explicitly;
-- let the rest of the project depend on the API, not on ECS storage.
+## Networked Gameplay
 
-### Folder layout
+### Start Direct
 
-```text
-TargetTracking/
-  Api/
-    ITargetTrackingModule.cs
-    ScanRequest.cs
-    TrackingCandidate.cs
-    TargetRegistration.cs
-  Application/
-    RequestTrackingScanUseCase.cs
-  Domain/
-    TargetDescriptor.cs
-    TrackingRules.cs
-  Runtime/
-    TargetTrackingBootstrapper.cs
-    TargetViewAdapter.cs
-    ColliderTargetRegistry.cs
-  Ecs/
-    Components/
-    Systems/
-    Jobs/
-    Bakers/
-    Internal/
-  Infrastructure/
-    TargetTrackingModule.cs
-    TargetTrackingInstaller.cs
-```
+A prototype or isolated network behavior may use one network-aware component that receives callbacks, checks authority, and updates its owned runtime state. Keep SDK access localized even before introducing abstractions.
 
-## Networked Gameplay Module
+### Extract Only Under Pressure
 
-Use for authoritative multiplayer logic, ownership-based interaction, and replicated session flows.
+| Current pressure | Smallest useful extraction |
+| --- | --- |
+| Authority checks are duplicated or inconsistent | Centralize one authority policy or service |
+| Transport callbacks contain gameplay decisions | Forward intent into one focused gameplay operation |
+| Replication code spreads across unrelated objects | Introduce one replication adapter |
+| Another transport is real or the SDK changes independently | Introduce a narrow transport contract |
+| Session lifecycle has several event sources | Add one bootstrapper or callback coordinator |
+| Serialization shape differs from gameplay state | Add boundary DTOs and explicit mapping |
 
-### Shape
+Authority is often a real boundary earlier than generic layering. Separate it when incorrect ownership can change game state, not simply because the project uses networking.
+
+### Possible Mature Shape
 
 ```text
 NetworkBootstrapper
-  -> Netcode callback adapters
+  -> transport callback adapters
       -> ClientConnectedHandler
       -> OwnershipChangedHandler
       -> SpawnPlayerUseCase
-      -> DespawnPlayerUseCase
       -> MatchStateSynchronizer
+
+Contracts
+  - IAuthorityService
+  - INetworkReplicationAdapter
+
+Domain
+  - MatchState
+  - PlayerSession
+  - AuthorityRules
 ```
 
-### Rules
+Keep gameplay intent and rules independent from transport only to the degree required by authority, reuse, testing, or transport volatility.
 
-- keep transport callbacks at the boundary;
-- make authority explicit;
-- keep gameplay rules independent from transport;
-- isolate replication and serialization behind adapters.
+## Hybrid UI, Gameplay, And Network
 
-### Folder layout
+Do not start with a dedicated hybrid architecture. Combine boundaries already justified in their own areas.
 
-```text
-Multiplayer/
-  Presentation/
-    NetworkStatusView.cs
-    MatchHudPresenter.cs
-  Application/
-    UseCases/
-      SpawnPlayerUseCase.cs
-      DespawnPlayerUseCase.cs
-      SubmitPlayerActionUseCase.cs
-    Handlers/
-      ClientConnectedHandler.cs
-      OwnershipChangedHandler.cs
-    Contracts/
-      IAuthorityService.cs
-      INetworkReplicationAdapter.cs
-  Domain/
-    MatchState.cs
-    PlayerSession.cs
-    AuthorityRules.cs
-  Infrastructure/
-    NetcodeAuthorityAdapter.cs
-    NetcodeReplicationAdapter.cs
-    NetworkBootstrapper.cs
-```
+A simple ability button may call a local gameplay component directly. Add a presenter when UI state becomes non-trivial. Add an authority boundary when the action can be rejected or owned remotely. Add replication mapping when transport state differs from gameplay state.
 
-## Hybrid UI Plus Gameplay Plus Network
-
-Use for HUD in a live match, in-game inventory, equipment panels, and pause overlays that reflect gameplay state.
-
-### Shape
+A mature path may look like:
 
 ```text
 AbilityPanelView
   -> AbilityPanelPresenter
-      -> GetAbilityPanelStateQuery
-      -> UseAbilityUseCase
-          -> IAuthorityService
+      -> GetAbilityPanelState
+      -> UseAbility
           -> Character
+          -> IAuthorityService
           -> INetworkReplicationAdapter
 ```
 
-### Rules
+The UI must not become authoritative gameplay state. Beyond that invariant, keep the path as short as current behavior allows.
 
-- UI does not talk to the network SDK directly;
-- UI is not the source of truth for gameplay state;
-- gameplay runtime does not mutate buttons directly;
-- presenter or query layer maps gameplay state into UI state.
+## Selection Questions
 
-## Selection Guide
+Before recommending any reference shape, answer:
 
-- regular UI screen: use the UI screen module.
-- local gameplay runtime: use the gameplay runtime module.
-- multi-stage flow: use a phase-based state machine.
-- high-scale performance island: use the ECS-backed subsystem.
-- authoritative transport-aware flow: use the networked gameplay module.
-- live UI over gameplay or network: use the hybrid module.
+- What is the smallest shape that implements today's behavior?
+- Where is the current source of truth?
+- Which responsibilities actually change independently?
+- Which lifetimes or owners conflict today?
+- Which external boundary is volatile, repeated, or replaceable now?
+- Which rule or scenario has enough risk to deserve isolation?
+- Which performance problem has been measured?
+- Which proposed types can be omitted without losing current behavior or safety?
 
-If none fits perfectly, still answer these questions explicitly:
-
-- where is the source of truth;
-- where are the boundaries;
-- who owns orchestration;
-- what layer integrates with Unity or transport details.
+If the last answer removes every proposed abstraction, recommend the direct implementation and record only the trigger for reconsideration.

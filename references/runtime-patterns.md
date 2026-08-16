@@ -3,200 +3,129 @@
 ## Table of Contents
 
 1. Async and cancellation
-2. Events, Rx, and R3
+2. Direct calls, events, Rx, and R3
 3. Gameplay runtime boundaries
-4. ECS and hybrid architecture
-5. Physics and jobs boundaries
-6. Network boundaries
+4. Physics boundaries
+5. Jobs, ECS, and hybrid execution
+6. Network authority boundaries
 
 ## Async And Cancellation
 
-- Use one async style consistently within a project, usually `async/await` or `UniTask`.
-- Pass `CancellationToken` into long-running operations.
-- Avoid uncontrolled fire-and-forget work.
-- Let the `Presenter` or runtime coordinator own cancellation and disposal.
-- Keep async business logic out of `View`.
+Match cancellation ownership to the lifetime of the work.
 
-Practical default:
+A local component may start and await an operation directly when the operation exists only for that component. Cancel it on destruction or disable only if the work should truly end with that Unity lifetime.
 
-- `UseCase` accepts `CancellationToken` if it can outlive a frame.
-- `Presenter` owns the lifetime token.
-- `View` only forwards user intent and renders result.
+Introduce a presenter, coordinator, or session owner when async work:
 
-## Events, Rx, And R3
+- survives a view or GameObject;
+- is shared by several entry points;
+- coordinates retries, navigation, or several dependencies;
+- must transfer between scene, session, or match lifetimes;
+- has produced stale completions or unclear cancellation behavior.
 
-Both plain C# events and Rx or R3 are valid. Choose based on problem shape, not fashion.
+Pass `CancellationToken` across an async boundary that can outlive its caller or be intentionally interrupted. Do not add tokens to immediate synchronous operations or create a coordinator solely to hold one token.
 
-Prefer simple events for:
+Use `async/await` or `UniTask` consistently within the local dependency surface. Avoid uncontrolled fire-and-forget work. If fire-and-forget behavior is intentional, assign error reporting and lifetime ownership explicitly.
 
-- basic UI callbacks;
-- local notifications;
-- small modules with obvious ownership.
+Do not assume destruction always cancels work. Cancel and dispose from the owner of the relevant lifetime scope, which may be a component, screen, scene, session, match, or project service.
 
-Prefer Rx or R3 for:
+## Direct Calls, Events, Rx, And R3
 
-- state-heavy UI;
-- derived state;
-- complex async or event pipelines;
-- stream composition involving timers, input, and external state.
+Start with a direct method call when the caller knows the callee and the relationship is local. Direct dependencies are easier to trace than a notification mechanism.
 
-Rules for Rx or R3:
+Use a plain C# event when:
 
-- subscription ownership must be explicit;
-- lifecycle and disposal must be explicit;
-- avoid hiding core scenario logic inside long operator chains;
-- do not force reactive types into domain or broad application contracts without a strong reason.
+- a source should not know one or more current listeners;
+- the notification is local and ownership is obvious;
+- subscribers can dispose or unsubscribe reliably.
 
-Use one dominant approach per module or bounded context. Mixing `event` and `R3` inside one module should be a conscious exception.
+Use Rx or R3 when current behavior benefits from stream composition, such as:
+
+- several changing values forming derived state;
+- timers, input, and external state combined over time;
+- cancellation or switching between asynchronous streams;
+- state-heavy UI where operators materially reduce coordination code.
+
+Do not introduce Rx for a single click callback or simple notification. Do not add an event bus to avoid a direct dependency that is already appropriate.
+
+When Rx or R3 is justified:
+
+- assign subscription ownership to a concrete lifetime;
+- make disposal visible;
+- keep important scenario decisions out of opaque operator chains;
+- avoid leaking reactive types into contracts that do not need stream semantics.
+
+Mix direct calls, events, and reactive streams where each solves a different current relationship. Do not enforce one mechanism across an entire project for aesthetic consistency.
 
 ## Gameplay Runtime Boundaries
 
-Split gameplay into three concerns that Unity code often mixes together:
+Allow Unity runtime interaction, orchestration, and simple state to remain together while one object owns and changes them coherently.
 
-- runtime adapters at the Unity boundary;
-- application orchestration;
-- domain rules and state.
+Extract only the concern under pressure:
 
-### Runtime adapters
+- move reusable or invariant-heavy rules into plain C# values or models;
+- move repeated multi-dependency actions into a focused operation;
+- centralize transitions when several objects compete to own flow state;
+- isolate animation, VFX, input, or physics only when it varies or obscures gameplay decisions;
+- separate HUD mapping when presentation complexity grows independently.
 
-Own:
+Do not create a `UseCase` for every action or ban business decisions from all Unity callbacks. A callback may perform a small local rule. Extract when the rule has independent meaning, reuse, branching risk, or testing value.
 
-- `MonoBehaviour` lifecycle;
-- input readers;
-- animation and VFX drivers;
-- collision or trigger callbacks;
-- scene object references;
-- network object views.
+Keep one explicit source of truth even in a direct design. Avoid global singleton access when it hides ownership or lets unrelated objects mutate the same state.
 
-Do not place business rules here.
+## Physics Boundaries
 
-### Gameplay application
+Use Unity physics types directly inside a local runtime feature when no independent boundary needs clean data.
 
-Use:
+Convert physics observations to project-level facts when:
 
-- `UseCase` for discrete actions;
-- `StateMachine` for phased flows;
-- systems for recurring or tick-based orchestration;
-- coordinators when several subsystems must move together.
+- rules must run without the physics scene;
+- several physics sources feed the same decision;
+- ECS, networking, replay, or tests consume the result;
+- `Collider`, `RaycastHit`, or `Rigidbody` details have spread into unrelated logic.
 
-### Gameplay domain
+Useful boundary values may include `HitContext`, `GroundContactInfo`, `MovementIntent`, `MotorCommand`, or `TrackingCandidate`. Introduce only the values that cross a current boundary; do not mirror every Unity type pre-emptively.
 
-Own:
+Keep mapping such as `Collider -> ProjectEntityId` near the physics integration that owns it.
 
-- health;
-- stamina;
-- cooldowns;
-- score rules;
-- damage rules;
-- action validity;
-- state invariants.
+## Jobs, ECS, And Hybrid Execution
 
-### Practical composition rules
+Treat jobs, Burst, and ECS as execution techniques, not architectural maturity badges.
 
-- keep `MonoBehaviour` at the edge of the system;
-- give important state one explicit owner;
-- per-frame logic does not justify mixing layers;
-- end Unity-specific dependencies at the adapter boundary;
-- do not default to global singleton services for module communication.
+Before adopting them:
 
-## ECS And Hybrid Architecture
+- measure the relevant workload;
+- identify the data and operation that dominate cost;
+- confirm that simpler algorithm, allocation, batching, or update-frequency changes are insufficient;
+- define who owns authoritative state during and after execution.
 
-Hybrid architecture is valid when boundaries are clear:
+Use jobs or Burst for a local parallel or numeric hot path without moving the surrounding feature to ECS. Use ECS when entity count, homogeneous processing, data locality, and scheduling justify its broader model.
 
-- UI and screen flow can use presentation plus application;
-- gameplay runtime can use OO patterns;
-- high-scale subsystems can use ECS or jobs;
-- integrations stay in infrastructure.
+Expose a narrow project API only when callers must remain independent from ECS storage or when the subsystem has several consumers. A local caller may integrate directly while ownership remains obvious.
 
-Use ECS when:
+Do not leak `EntityManager`, `SystemAPI`, `EntityCommandBuffer`, `NativeArray`, `JobHandle`, component layouts, or allocator lifetimes across an earned module boundary.
 
-- there are many similar entities;
-- the subsystem benefits from data-oriented execution;
-- Burst or jobs materially matter;
-- the task scales poorly in classic `MonoBehaviour` form.
+Choose one synchronization model:
 
-Do not use ECS just for future-proofing.
+1. Keep source of truth outside the optimized subsystem, pass snapshots in, and return results.
+2. Keep source of truth inside the subsystem and let callers use only its API.
 
-### Position ECS correctly
+Do not maintain two mutable authoritative copies without an explicit synchronization owner.
 
-ECS is an execution model, not a replacement for domain or application. Treat it as:
+## Network Authority Boundaries
 
-- a specialized simulation core;
-- an execution engine for part of gameplay;
-- an internal runtime subsystem.
+Keep a small network interaction direct and localized. Introduce boundaries in response to actual authority, transport, replication, serialization, or lifecycle pressure.
 
-The outside world should talk to an ECS module through narrow contracts, not through `EntityManager`, `SystemAPI`, `EntityCommandBuffer`, concrete systems, or component layouts.
+Separate authority decisions from transport callbacks when incorrect ownership can mutate game state. Separate gameplay intent from transport when the same action originates locally and remotely, is tested independently, or survives an SDK change.
 
-### Ownership and synchronization
+Introduce:
 
-Define explicitly:
+- a focused handler for a network event with non-trivial coordination;
+- an authority policy or service when checks repeat or vary;
+- a replication adapter when SDK calls spread across gameplay code;
+- a transport contract when another transport exists or independent evolution is valuable now;
+- a bootstrapper when callback registration and session lifetime are no longer obvious locally.
 
-- who owns source of truth;
-- who may mutate it;
-- where synchronization happens between OO runtime and ECS;
-- what data is authoritative versus derived cache.
+One localized call to `NetworkManager.Singleton` does not require a wrapper. Repeated access across unrelated locations is a signal to centralize ownership.
 
-Two valid models:
-
-1. Source of truth outside ECS: ECS computes results from snapshots and returns DTO results.
-2. Source of truth inside ECS module: the rest of the project uses only the module API.
-
-## Physics And Jobs Boundaries
-
-Domain may know:
-
-- physical meaning of data;
-- movement parameters;
-- gameplay constraints;
-- calculation results.
-
-Domain must not know:
-
-- `Rigidbody`
-- `Collider`
-- `Transform`
-- `RaycastHit`
-- `EntityManager`
-- `JobHandle`
-- memory container lifetime details
-
-Keep Unity runtime references at runtime boundaries such as:
-
-- hitbox or hurtbox adapters;
-- physics listeners;
-- mapping layers like `Collider -> ProjectEntityId`;
-- adapters that gather physics facts.
-
-Convert them to clean project-level data such as:
-
-- `HitContext`
-- `GroundContactInfo`
-- `MovementIntent`
-- `MotorCommand`
-- `TargetScanRequest`
-- `TrackingCandidate`
-
-Jobs and Burst are execution details. Do not leak `NativeArray`, `JobHandle`, or ECS component access types into architectural contracts.
-
-## Network Boundaries
-
-Separate these concerns explicitly:
-
-- domain intent;
-- runtime representation;
-- authority;
-- transport and replication details.
-
-Recommended roles:
-
-- `Bootstrapper` to register network callbacks;
-- `Handler` for specific network events;
-- `UseCase` for gameplay scenario logic;
-- adapter or wrapper around Netcode, Photon, FishNet, or another SDK.
-
-Rules:
-
-- do not let `NetworkManager.Singleton` spread everywhere;
-- do not let transport callbacks mutate UI or domain state directly;
-- keep authority checks explicit;
-- keep network SDK references inside infrastructure or runtime adapter boundaries.
+Do not let transport callbacks mutate UI or shared domain state through hidden side effects. Keep the path from incoming message to authority decision and state mutation traceable, whether it uses two types or a mature module.
